@@ -24,11 +24,15 @@ interface Step {
 }
 
 export class LlamaAgent {
+    private static readonly MAX_REASONING_TEXT_CHARS = 20000;
+    private static readonly REASONING_TRUNCATION_NOTICE = '[reasoning truncated]\n';
+
     private app: Application
     private lastStopRequestTime = Date.now();
     private messages: ChatMessage[] = []
     private confirmationState: string = ""; // Use consts CONFIRMATION_STATE.*
     private logText = ""
+    private reasoningText = ""
     public contexProjectFiles: Map<string,string> = new Map();
     public sentContextFiles: Map<string,string> = new Map();
     public contextImage: string = "";
@@ -46,6 +50,8 @@ export class LlamaAgent {
 
     getAgentLogText = () => this.logText;
 
+    getAgentReasoningText = () => this.reasoningText;
+
     getOriginalQuery = () => this.originalQuery;
 
     isAgentInProgress = () => this.agentInProgress;
@@ -57,6 +63,18 @@ export class LlamaAgent {
     setTelegramBotRequest = (isTlgReq: boolean) => this.isTlgrBotRequest = isTlgReq
     
     isTelegramBotRequest = (): boolean => this.isTlgrBotRequest;
+
+    private appendReasoning(delta: string) {
+        if (!delta) {
+            return;
+        }
+
+        this.reasoningText += delta;
+        if (this.reasoningText.length > LlamaAgent.MAX_REASONING_TEXT_CHARS) {
+            const tailBudget = Math.max(0, LlamaAgent.MAX_REASONING_TEXT_CHARS - LlamaAgent.REASONING_TRUNCATION_NOTICE.length);
+            this.reasoningText = LlamaAgent.REASONING_TRUNCATION_NOTICE + this.reasoningText.slice(-tailBudget);
+        }
+    }
 
     preprocessCommandPrompt = async (prompt: string): Promise<string> => {
         const regex = /!`(.+?)`/g;
@@ -139,6 +157,7 @@ export class LlamaAgent {
             }
         ];
         this.logText = "";
+        this.reasoningText = "";
     }
 
     selectChat = async (chat: Chat) => {
@@ -455,6 +474,9 @@ export class LlamaAgent {
                     let streamed = "";
                     let deltaBuffer = ""
                     const maxChunkSize = this.app.configuration.telegram_chunk_size
+                    // Reset reasoning for this turn before streaming the next response.
+                    this.reasoningText = "";
+                    this.app.llamaWebviewProvider.logReasoningInUi(this.reasoningText);
                     let data:any = await this.app.llamaServer.getAgentCompletion(
                                                                 this.messages, 
                                                                 false, 
@@ -470,7 +492,13 @@ export class LlamaAgent {
                                                                 }, 
                                                                 this.abortController?.signal, 
                                                                 !this.sentContextImages.includes(this.contextImage)? this.contextImage : "",
-                                                                iterationsCount
+                                                                iterationsCount,
+                    this.app.configuration.agent_show_reasoning
+                        ? (delta: string) => {
+                                                                        this.appendReasoning(delta);
+                                                                        this.app.llamaWebviewProvider.logReasoningInUi(this.reasoningText);
+                                                                    }
+                                                                    : undefined
                                                             );
                     if (this.isTlgrBotRequest && deltaBuffer.length > 0) {
                         this.app.telegramBot.sendResponse(deltaBuffer); 

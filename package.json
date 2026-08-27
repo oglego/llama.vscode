@@ -1627,6 +1627,16 @@
           "default": false,
           "description": "Show the details about the tools calls in UI - arguments and results."
         },
+        "llama-vscode.agent_show_reasoning": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show the model's reasoning/thinking process in a collapsible section in the Llama Agent view, separate from the final answer, for models that emit reasoning (e.g. via <think> tags or a reasoning_content field). Off by default; enable to see the model's thinking."
+        },
+        "llama-vscode.agent_split_inline_reasoning_tags": {
+          "type": "boolean",
+          "default": false,
+          "description": "Split inline reasoning tags such as <think>...</think> or Harmony analysis markers into separate reasoning and answer streams. Off by default to avoid misclassifying ordinary text; enable only for models that actually emit these formats."
+        },
         "llama-vscode.skills_folder": {
           "type": "string",
           "default": "",

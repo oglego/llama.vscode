@@ -110,6 +110,8 @@ export class Configuration {
     plan_review_frequency = 5;
     reminder_edit_file_frequency = 5
     tools_log_calls = false;
+    agent_show_reasoning = false;
+    agent_split_inline_reasoning_tags = false;
     chats_max_history = 50;
     chats_max_tokens = 64000;
     chats_summarize_old_msgs = false;
@@ -279,6 +281,8 @@ export class Configuration {
         this.plan_review_frequency = Number(config.get<number>("plan_review_frequency"));
         this.reminder_edit_file_frequency = Number(config.get<number>("reminder_edit_file_frequency"));
         this.tools_log_calls = Boolean(config.get<boolean>("tools_log_calls"));
+        this.agent_show_reasoning = config.get<boolean>("agent_show_reasoning") ?? false;
+        this.agent_split_inline_reasoning_tags = Boolean(config.get<boolean>("agent_split_inline_reasoning_tags"));
         this.chats_max_history = Number(config.get<number>("chats_max_history"));
         this.chats_max_tokens = Number(config.get<number>("chats_max_tokens"));
         this.max_parallel_completions = Number(config.get<number>("max_parallel_completions"));
