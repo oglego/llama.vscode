@@ -18,6 +18,9 @@ const App: React.FC<AppProps> = () => {
   const [displayText, setDisplayText] = useState<string>(
     initialState.displayText || ''
   );
+  const [reasoningText, setReasoningText] = useState<string>(
+    initialState.reasoningText || ''
+  );
   const [inputText, setInputText] = useState<string>(
     initialState.inputText || ''
   );
@@ -57,6 +60,7 @@ const App: React.FC<AppProps> = () => {
   useEffect(() => {
     vscode.setState({
       displayText,
+      reasoningText,
       inputText,
       currentToolsModel,
       currentChatModel,
@@ -68,7 +72,7 @@ const App: React.FC<AppProps> = () => {
       currentState,
       view
     });
-  }, [displayText, inputText, currentToolsModel, currentChatModel, currentEmbeddingsModel, currentCompletionModel, currentAgentModel, currentAgent, currentEnv, currentState, view]);
+  }, [displayText, reasoningText, inputText, currentToolsModel, currentChatModel, currentEmbeddingsModel, currentCompletionModel, currentAgentModel, currentAgent, currentEnv, currentState, view]);
 
   useEffect(() => {
     // Listen for messages from the extension
@@ -98,6 +102,9 @@ const App: React.FC<AppProps> = () => {
           break;
         case 'updateView':
           setView(message.text || noViewSet);
+          break;
+        case 'updateReasoning':
+          setReasoningText(message.text || '');
           break;
         case 'updateContextFiles':
           setContextFiles(new Map(message.files || []));
@@ -209,6 +216,8 @@ const App: React.FC<AppProps> = () => {
           <AgentView
             displayText={displayText}
             setDisplayText={setDisplayText}
+            reasoningText={reasoningText}
+            setReasoningText={setReasoningText}
             inputText={inputText}
             setInputText={setInputText}
             currentToolsModel={currentToolsModel}

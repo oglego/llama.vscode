@@ -627,6 +627,10 @@ export class LlamaWebviewProvider implements vscode.WebviewViewProvider {
             command: 'updateText',
             text: ''
         });
+        this._webview?.webview?.postMessage({
+            command: 'updateReasoning',
+            text: ''
+        });
         webviewView.webview.postMessage({
             command: 'updateContextImage',
             image: ""
@@ -757,6 +761,13 @@ export class LlamaWebviewProvider implements vscode.WebviewViewProvider {
         });
     }
 
+    public logReasoningInUi(reasoningText: string) {
+        this._webview?.webview?.postMessage({
+            command: 'updateReasoning',
+            text: reasoningText
+        });
+    }
+
     public setState(stateText: string) {
         this._webview?.webview?.postMessage({
             command: 'updateCurrentState',
@@ -817,6 +828,7 @@ export class LlamaWebviewProvider implements vscode.WebviewViewProvider {
         this.updateSettingsInView();
         this.updateDefaultModelsInView();
         this.logInUi(this.app.llamaAgent.getAgentLogText())
+        this.logReasoningInUi(this.app.llamaAgent.getAgentReasoningText())
     }
 
     public updateModels() {

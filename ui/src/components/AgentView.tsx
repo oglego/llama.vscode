@@ -1,11 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { Lightbulb } from 'lucide-react';
 import { vscode } from '../types/vscode';
 
 interface AgentViewProps {
   displayText: string;
   setDisplayText: (text: string) => void;
+  reasoningText: string;
+  setReasoningText: (text: string) => void;
   inputText: string;
   setInputText: (text: string) => void;
   currentToolsModel: string;
@@ -21,6 +24,8 @@ interface AgentViewProps {
 const AgentView: React.FC<AgentViewProps> = ({
   displayText,
   setDisplayText,
+  reasoningText,
+  setReasoningText,
   inputText,
   setInputText,
   currentToolsModel,
@@ -33,6 +38,11 @@ const AgentView: React.FC<AgentViewProps> = ({
   setContextImage
 }) => {
   const [showFileSelector, setShowFileSelector] = useState<boolean>(false);
+  // Whether the reasoning/thinking panel is expanded. Collapsed by default
+  // so it doesn't dominate the view; auto-expands while reasoning is
+  // actively streaming in, unless the user has explicitly collapsed it.
+  const [reasoningExpanded, setReasoningExpanded] = useState<boolean>(false);
+  const [reasoningManuallyToggled, setReasoningManuallyToggled] = useState<boolean>(false);
   const [fileList, setFileList] = useState<string[]>([]);
   const [fileFilter, setFileFilter] = useState<string>('');
   const [selectedIndex, setSelectedIndex] = useState<number>(0);
@@ -94,6 +104,9 @@ const AgentView: React.FC<AgentViewProps> = ({
         case 'updateText':
           setDisplayText(message.text);
           break;
+        case 'updateReasoning':
+          setReasoningText(message.text || '');
+          break;
         case 'clearText':
           setDisplayText('');
           break;
@@ -126,7 +139,28 @@ const AgentView: React.FC<AgentViewProps> = ({
 
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [setDisplayText, setCurrentState, setContextFiles, setContextImage]);
+  }, [setDisplayText, setReasoningText, setCurrentState, setContextFiles, setContextImage]);
+
+  // Auto-expand the reasoning panel while a new turn's reasoning is
+  // streaming in, unless the user explicitly collapsed it. Reset the
+  // "manually toggled" flag once the panel clears at the start of the
+  // next turn, so auto-expand kicks back in for the next response.
+  useEffect(() => {
+    if (!reasoningText) {
+      setReasoningManuallyToggled(false);
+      setReasoningExpanded(false);
+      return;
+    }
+    if (!reasoningManuallyToggled) {
+      setReasoningExpanded(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reasoningText]);
+
+  const toggleReasoning = () => {
+    setReasoningManuallyToggled(true);
+    setReasoningExpanded(prev => !prev);
+  };
 
   // Function to focus the textarea (can be called from extension)
   const focusTextarea = () => {
@@ -416,6 +450,53 @@ const AgentView: React.FC<AgentViewProps> = ({
         {!currentToolsModel.includes('No model selected...') && (
           <div className="content" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
            {/* Chat Display Area */}
+           {/* Reasoning ("thinking") Display Area */}
+           {reasoningText && (
+             <div className="reasoning-container" style={{ flexShrink: 0, margin: '0 0 8px 0' }}>
+               <button
+                 onClick={toggleReasoning}
+                 className="reasoning-toggle"
+                 title={reasoningExpanded ? 'Hide model reasoning' : 'Show model reasoning'}
+                 style={{
+                   display: 'flex',
+                   alignItems: 'center',
+                   gap: '6px',
+                   width: '100%',
+                   textAlign: 'left',
+                   background: 'transparent',
+                   border: '1px solid var(--vscode-panel-border, #444)',
+                   borderRadius: '4px',
+                   padding: '4px 8px',
+                   cursor: 'pointer',
+                   color: 'var(--vscode-descriptionForeground, #999)',
+                   fontSize: '0.9em'
+                 }}
+               >
+                 <span>{reasoningExpanded ? '▼' : '▶'}</span>
+                 <Lightbulb size={14} strokeWidth={2} style={{ flexShrink: 0 }} />
+                 <span>Reasoning</span>
+                 <span style={{ opacity: 0.7 }}>{reasoningExpanded ? '(hide)' : '(show)'}</span>
+               </button>
+               {reasoningExpanded && (
+                 <div
+                   className="reasoning-content"
+                   style={{
+                     maxHeight: '30vh',
+                     overflowY: 'auto',
+                     padding: '8px',
+                     marginTop: '4px',
+                     border: '1px solid var(--vscode-panel-border, #444)',
+                     borderRadius: '4px',
+                     opacity: 0.85,
+                     fontStyle: 'italic'
+                   }}
+                 >
+                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{reasoningText}</ReactMarkdown>
+                 </div>
+               )}
+             </div>
+           )}
+
            {/* Markdown Display Area */}
            {displayText && (
              <div className="markdown-container" ref={markdownContainerRef} style={{ flex: 1, minHeight: 0, maxHeight: '50vh' }}>

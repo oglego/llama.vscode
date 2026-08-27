@@ -27,7 +27,7 @@ const STATUS_OK = 200;
 
 export interface LlamaToolsResponse {
     choices: [{
-        message:{role?: string, content?: string | null, tool_calls?:[{id:string, function: {name:string, arguments: string}}]},
+        message:{role?: string, content?: string | null, reasoning_content?: string | null, tool_calls?:[{id:string, function: {name:string, arguments: string}}]},
         finish_reason?: string,
         error?: LlamaApiError,
     }];
@@ -271,6 +271,84 @@ export class LlamaServer {
     }
 
     // -------------------------------------------------------------
+    // Streaming helper – incrementally splits inline "thought" tags
+    // (<think>...</think> / <|channel|>analysis<|message|>...<|end|>)
+    // out of a live token stream, even when a tag is split across
+    // multiple chunks. Used so the UI can show reasoning separately
+    // from the visible answer as it streams in, for models that put
+    // their reasoning inline in `content` instead of using a
+    // dedicated `reasoning_content` field.
+    // -------------------------------------------------------------
+    private static readonly THOUGHT_OPEN_TAGS = ['<think>', '<|channel|>analysis<|message|>'];
+    private static readonly THOUGHT_CLOSE_TAGS = ['</think>', '<|end|>'];
+
+    private shouldSplitInlineReasoning(): boolean {
+        return Boolean(this.app.configuration.agent_split_inline_reasoning_tags)
+            || Boolean(this.app.configuration.agent_show_reasoning);
+    }
+
+    private createInlineThoughtSplitter() {
+        let buffer = '';
+        let inThought = false;
+
+        // Length of the longest suffix of `text` that is a proper prefix of
+        // one of `tags`, so we never emit a tag that arrived split across
+        // two stream chunks.
+        const longestPendingTagPrefixLength = (text: string, tags: string[]): number => {
+            let longest = 0;
+            const maxLen = Math.min(text.length, Math.max(...tags.map(t => t.length)) - 1);
+            for (let len = maxLen; len > 0; len--) {
+                const suffix = text.slice(text.length - len);
+                if (tags.some(tag => tag.startsWith(suffix))) {
+                    longest = len;
+                    break;
+                }
+            }
+            return longest;
+        };
+
+        const findEarliestTag = (text: string, tags: string[]): { index: number, tag: string } | undefined => {
+            let best: { index: number, tag: string } | undefined;
+            for (const tag of tags) {
+                const idx = text.indexOf(tag);
+                if (idx !== -1 && (!best || idx < best.index)) {
+                    best = { index: idx, tag };
+                }
+            }
+            return best;
+        };
+
+        return (chunk: string): { visible: string, reasoning: string } => {
+            buffer += chunk;
+            let visible = '';
+            let reasoning = '';
+
+            // Guard against pathological input causing an infinite loop.
+            let safety = buffer.length + chunk.length + 16;
+
+            while (buffer.length > 0 && safety-- > 0) {
+                const tags = inThought ? LlamaServer.THOUGHT_CLOSE_TAGS : LlamaServer.THOUGHT_OPEN_TAGS;
+                const match = findEarliestTag(buffer, tags);
+
+                if (!match) {
+                    const holdBack = longestPendingTagPrefixLength(buffer, tags);
+                    const emit = buffer.slice(0, buffer.length - holdBack);
+                    if (inThought) reasoning += emit; else visible += emit;
+                    buffer = buffer.slice(buffer.length - holdBack);
+                    break;
+                }
+
+                const before = buffer.slice(0, match.index);
+                if (inThought) reasoning += before; else visible += before;
+                buffer = buffer.slice(match.index + match.tag.length);
+                inThought = !inThought;
+            }
+
+            return { visible, reasoning };
+        };
+    }
+
+    // -------------------------------------------------------------
     // Public utility – filter thought from an array of messages
     // -------------------------------------------------------------
     private filterThoughtFromMsgs(messages:any) {
@@ -283,11 +361,18 @@ export class LlamaServer {
         // `msg.content` is guaranteed to be a string for assistants,
         // but we stay defensive and accept `null` as well.
         const originalContent = msg.content as string | null;
-        const cleanedContent = this.stripThoughts(originalContent);
+        const cleanedContent = this.shouldSplitInlineReasoning()
+            ? this.stripThoughts(originalContent)
+            : originalContent;
+
+        // Drop reasoning_content too (set when the model streamed its
+        // thinking via a dedicated field rather than inline tags) so
+        // reasoning never leaks back into the context on the next turn.
+        const { reasoning_content, ...rest } = msg;
 
         // Preserve every other field (name, function_call, …) unchanged.
         return {
-        ...msg,
+        ...rest,
         content: cleanedContent,
         };
     });
@@ -905,7 +990,8 @@ private createGetSummaryRequestPayload(messages: ChatMessage[], model: string) {
         onDelta?: (delta: string) => void,
         abortSignal?: AbortSignal,
         imagePath = "",
-        iterationsCount = 0
+        iterationsCount = 0,
+        onReasoningDelta?: (delta: string) => void
     ): Promise<LlamaToolsResponse | undefined> => {
         const { endpoint, model, requestConfig } = this.getToolsRequestDetails();
         const trace: RequestTraceContext = this.createRequestTrace(isSummarization ? 'agent-summary' : 'agent')
@@ -996,6 +1082,10 @@ private createGetSummaryRequestPayload(messages: ChatMessage[], model: string) {
                 const readable = streamResponse.data as NodeJS.ReadableStream;
                 let buffer = "";
                 let fullContent = "";
+                let fullReasoning = "";
+                const splitInlineThoughts = this.shouldSplitInlineReasoning()
+                    ? this.createInlineThoughtSplitter()
+                    : undefined;
                 let finishReason: string | undefined = undefined;
                 const toolCalls: any[] = [];
                 const message: any = { role: 'assistant', content: null as string | null };
@@ -1003,6 +1093,7 @@ private createGetSummaryRequestPayload(messages: ChatMessage[], model: string) {
 
                 const finalize = () => {
                     message.content = fullContent || null;
+                    if (fullReasoning) message.reasoning_content = fullReasoning;
                     if (toolCalls.length > 0) message.tool_calls = toolCalls;
                     this.logApiResponse(
                         'TOOLS_STREAM',
@@ -1065,9 +1156,34 @@ private createGetSummaryRequestPayload(messages: ChatMessage[], model: string) {
                             const delta = choice.delta || choice.message || {};
                             if (delta.role && !message.role) message.role = delta.role;
 
-                            if (typeof delta.content === 'string') {
-                                fullContent += delta.content;
-                                if (onDelta) onDelta(delta.content);
+                            // Some servers/models expose reasoning natively via a
+                            // dedicated `reasoning_content` field (e.g. llama.cpp's
+                            // reasoning_format handling for DeepSeek-R1 style models).
+                            if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) {
+                                fullReasoning += delta.reasoning_content;
+                                if (onReasoningDelta) onReasoningDelta(delta.reasoning_content);
+                            }
+
+                            if (typeof delta.content === 'string' && delta.content) {
+                                if (splitInlineThoughts) {
+                                    // Some models inline their reasoning in `content` using
+                                    // <think>...</think> (or Harmony analysis channel) tags.
+                                    // Split those out live so only the final answer lands in
+                                    // the visible transcript, but only when the feature is
+                                    // explicitly enabled for known formats.
+                                    const { visible, reasoning } = splitInlineThoughts(delta.content);
+                                    if (visible) {
+                                        fullContent += visible;
+                                        if (onDelta) onDelta(visible);
+                                    }
+                                    if (reasoning) {
+                                        fullReasoning += reasoning;
+                                        if (onReasoningDelta) onReasoningDelta(reasoning);
+                                    }
+                                } else {
+                                    fullContent += delta.content;
+                                    if (onDelta) onDelta(delta.content);
+                                }
                             }
 
                             if (Array.isArray(delta.tool_calls)) {
