@@ -90,6 +90,10 @@
         "title": "llama-vscode: Ask AI"
       },
       {
+        "command": "extension.semanticSearch",
+        "title": "llama-vscode: Semantic Search"
+      },
+      {
         "command": "extension.sendPromptToAgent",
         "title": "llama-vscode: Send selection/all text to the agent."
       },

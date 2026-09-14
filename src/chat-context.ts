@@ -94,6 +94,13 @@ export class ChatContext {
     }
 
     private cosineSimilarityRank = async (query: string, chunkEntries: ChunkEntry[], topN: number):Promise<ChunkEntry[]>  => {
+        const scored = await this.cosineSimilarityRankWithScores(query, chunkEntries, topN);
+        return scored.map(({ entry: chunkEntry }) => chunkEntry);
+    }
+
+    // Same ranking as cosineSimilarityRank, but keeps the similarity score attached to each
+    // result so callers (e.g. the semantic search command) can display/sort on it.
+    private cosineSimilarityRankWithScores = async (query: string, chunkEntries: ChunkEntry[], topN: number):Promise<{ entry: ChunkEntry, score: number }[]>  => {
         const queryEmbedding = await this.getEmbedding(query);
         let chunksWithScore = Array.from(chunkEntries)
         .map((chunkEntry, index) => ({
@@ -122,8 +129,42 @@ export class ChatContext {
         });
 
         return chunksWithScore.sort((a, b) => b.score - a.score)
-        .slice(0, topN)
-        .map(({ entry: chunkEntry }) => chunkEntry);
+        .slice(0, topN);
+    }
+
+    // Project-wide semantic search: ranks all indexed chunks against the query using the
+    // embeddings model, without the LLM keyword-extraction round trip used by chat RAG
+    // (getRagContextChunks), since the user's own query is already the search term.
+    // A cheap BM25 pre-filter keeps the embedding calls bounded on large projects.
+    // topN defaults higher than rag_max_embedding_filter_chunks (used for chat context
+    // injection) since search results are meant to be browsed, not fed into an LLM prompt.
+    public semanticSearch = async (query: string, topN: number = 20): Promise<{ entry: ChunkEntry, score: number }[]> => {
+        // Note: plain string literals are used for these messages (rather than getUiText) to
+        // avoid touching the multi-language translation tables in this first pass.
+        if (this.entries.size === 0) {
+            vscode.window.showInformationMessage(
+                "No indexed files yet. Enable RAG from the llama-vscode menu and wait for indexing to finish.");
+            return [];
+        }
+
+        if (!this.app.getEmbeddingsModel().endpoint) {
+            await this.app.modelService.selectDefaultModel(ModelType.Embeddings, PERSISTENCE_KEYS.DEFAULT_EMBS_MODEL);
+            // Wait for the embeddings model to be loaded
+            await new Promise(resolve => setTimeout(resolve, 5000));
+        }
+        if (!(this.app.getEmbeddingsModel().endpoint && this.app.getEmbeddingsModel().endpoint?.trim() != "")
+            && this.app.configuration.endpoint_embeddings.trim() == "") {
+            vscode.window.showErrorMessage(
+                "No embeddings model configured. Semantic search requires one - select it from the llama-vscode menu.");
+            return [];
+        }
+
+        const keywords = this.tokenize(query);
+        const candidateChunks = keywords.length > 0
+            ? this.rankTexts(keywords, Array.from(this.entries.values()), this.app.configuration.rag_max_bm25_filter_chunks)
+            : Array.from(this.entries.values());
+
+        return await this.cosineSimilarityRankWithScores(query, candidateChunks, topN);
     }
 
     private cosineSimilarity = async (a: number[], chunk: ChunkEntry): Promise<number> => {

@@ -6,7 +6,7 @@ import * as vscode from 'vscode';
 import {Application} from "./application";
 import {LlamaWebviewProvider} from './llama-webview-provider'
 import { Utils } from './utils';
-import { Agent, Env, LlmModel } from './types';
+import { Agent, Env, LlmModel, ChunkEntry } from './types';
 import { env } from 'process';
 import { PERSISTENCE_KEYS, PREDEFINED_LISTS_KEYS, SETTING_NAME_FOR_LIST, UiView } from './constants';
 import {LlamaChatModelProvider} from "./llama-chat-model-provider";
@@ -393,6 +393,65 @@ export class Architect {
             this.app.askAi.showChatWithAi(false, context);
         });
         context.subscriptions.push(triggerAskAiDisposable);
+    }
+
+    registerCommandSemanticSearch = (context: vscode.ExtensionContext) => {
+        const triggerSemanticSearchDisposable = vscode.commands.registerCommand('extension.semanticSearch', async () => {
+            // Note: plain string literals are used here (rather than getUiText) to avoid
+            // touching the multi-language translation tables in this first pass. Follow-up
+            // PR can add proper i18n keys for these labels.
+            const query = await vscode.window.showInputBox({
+                title: "Semantic search",
+                prompt: "Search your project by meaning, not just keywords",
+                placeHolder: 'e.g. "function that validates an email address"'
+            });
+            if (!query || query.trim() === "") {
+                return;
+            }
+
+            const results = await this.app.chatContext.semanticSearch(query.trim());
+            if (!results || results.length === 0) {
+                vscode.window.showInformationMessage("No matching results found.");
+                return;
+            }
+
+            interface SemanticSearchQuickPickItem extends vscode.QuickPickItem {
+                entry: ChunkEntry;
+            }
+
+            const items: SemanticSearchQuickPickItem[] = results.map(({ entry, score }) => {
+                const snippet = entry.content.replace(/\s+/g, ' ').trim().slice(0, 160);
+                return {
+                    label: `$(file-code) ${vscode.workspace.asRelativePath(entry.uri)}`,
+                    description: `lines ${entry.firstLine}-${entry.lastLine} · score ${score.toFixed(3)}`,
+                    detail: snippet,
+                    entry: entry
+                };
+            });
+
+            const picked = await vscode.window.showQuickPick(items, {
+                title: "Semantic search results",
+                placeHolder: "Select a result to open it",
+                matchOnDescription: true,
+                matchOnDetail: true
+            });
+            if (!picked) {
+                return;
+            }
+
+            try {
+                const doc = await vscode.workspace.openTextDocument(picked.entry.uri);
+                const editor = await vscode.window.showTextDocument(doc);
+                const startLine = Math.max(0, picked.entry.firstLine - 1);
+                const endLine = Math.max(startLine, picked.entry.lastLine - 1);
+                const range = new vscode.Range(startLine, 0, endLine, 0);
+                editor.selection = new vscode.Selection(range.start, range.start);
+                editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+            } catch (error) {
+                vscode.window.showErrorMessage("Could not open file: " + picked.entry.uri);
+            }
+        });
+        context.subscriptions.push(triggerSemanticSearchDisposable);
     }
 
     registerCommandAskAiWithContext = (context: vscode.ExtensionContext) => {
