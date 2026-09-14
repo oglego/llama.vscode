@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { Lightbulb } from 'lucide-react';
 import { vscode } from '../types/vscode';
 
 interface AgentViewProps {
@@ -472,7 +473,9 @@ const AgentView: React.FC<AgentViewProps> = ({
                  }}
                >
                  <span>{reasoningExpanded ? '▼' : '▶'}</span>
-                 <span>{reasoningExpanded ? 'Hide reasoning' : 'Show reasoning'}</span>
+                 <Lightbulb size={14} strokeWidth={2} style={{ flexShrink: 0 }} />
+                 <span>Reasoning</span>
+                 <span style={{ opacity: 0.7 }}>{reasoningExpanded ? '(hide)' : '(show)'}</span>
                </button>
                {reasoningExpanded && (
                  <div
