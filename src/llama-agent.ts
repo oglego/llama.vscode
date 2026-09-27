@@ -66,15 +66,12 @@ export class LlamaAgent {
     isTelegramBotRequest = (): boolean => this.isTlgrBotRequest;
 
     private appendReasoning(delta: string) {
-        if (!delta) {
-            return;
-        }
-
-        this.reasoningText += delta;
-        if (this.reasoningText.length > LlamaAgent.MAX_REASONING_TEXT_CHARS) {
-            const tailBudget = Math.max(0, LlamaAgent.MAX_REASONING_TEXT_CHARS - LlamaAgent.REASONING_TRUNCATION_NOTICE.length);
-            this.reasoningText = LlamaAgent.REASONING_TRUNCATION_NOTICE + this.reasoningText.slice(-tailBudget);
-        }
+        this.reasoningText = Utils.appendBounded(
+            this.reasoningText,
+            delta,
+            LlamaAgent.MAX_REASONING_TEXT_CHARS,
+            LlamaAgent.REASONING_TRUNCATION_NOTICE
+        );
     }
 
     preprocessCommandPrompt = async (prompt: string): Promise<string> => {

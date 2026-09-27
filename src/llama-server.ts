@@ -282,6 +282,15 @@ export class LlamaServer {
     private static readonly THOUGHT_OPEN_TAGS = ['<think>', '<|channel|>analysis<|message|>'];
     private static readonly THOUGHT_CLOSE_TAGS = ['</think>', '<|end|>'];
 
+    // Bounds how much reasoning text a single getAgentCompletion() call can
+    // accumulate in `fullReasoning`/`message.reasoning_content`. Without this,
+    // a model that reasons at length (or a stream that never closes a
+    // <think> tag) would grow that string without limit, and it gets
+    // persisted into chat history and re-sent as part of the prompt on
+    // every future request even when agent_show_reasoning is off.
+    private static readonly MAX_REASONING_CONTENT_CHARS = 20000;
+    private static readonly REASONING_CONTENT_TRUNCATION_NOTICE = '[reasoning truncated]\n';
+
     private shouldSplitInlineReasoning(): boolean {
         return Boolean(this.app.configuration.agent_split_inline_reasoning_tags)
             || Boolean(this.app.configuration.agent_show_reasoning);
@@ -318,13 +327,13 @@ export class LlamaServer {
             return best;
         };
 
-        return (chunk: string): { visible: string, reasoning: string } => {
+        const push = (chunk: string): { visible: string, reasoning: string } => {
             buffer += chunk;
             let visible = '';
             let reasoning = '';
 
             // Guard against pathological input causing an infinite loop.
-            let safety = buffer.length + chunk.length + 16;
+            let safety = buffer.length + 16;
 
             while (buffer.length > 0 && safety-- > 0) {
                 const tags = inThought ? LlamaServer.THOUGHT_CLOSE_TAGS : LlamaServer.THOUGHT_OPEN_TAGS;
@@ -346,6 +355,19 @@ export class LlamaServer {
 
             return { visible, reasoning };
         };
+
+        // Called once the stream ends: any text still held back (a partial
+        // tag prefix that never got completed, or an unclosed <think>/
+        // Harmony block cut off by finish_reason=length) must still reach
+        // the visible answer or the reasoning panel instead of silently
+        // disappearing.
+        const flush = (): { visible: string, reasoning: string } => {
+            const emit = buffer;
+            buffer = '';
+            return inThought ? { visible: '', reasoning: emit } : { visible: emit, reasoning: '' };
+        };
+
+        return { push, flush };
     }
 
     // -------------------------------------------------------------
@@ -1086,6 +1108,28 @@ private createGetSummaryRequestPayload(messages: ChatMessage[], model: string) {
                 const splitInlineThoughts = this.shouldSplitInlineReasoning()
                     ? this.createInlineThoughtSplitter()
                     : undefined;
+
+                // Emits whatever text the splitter is still holding back
+                // (an incomplete tag prefix, or the remainder of an
+                // unclosed <think>/Harmony block) once the stream ends,
+                // so it isn't silently dropped.
+                const flushInlineThoughts = () => {
+                    if (!splitInlineThoughts) return;
+                    const { visible, reasoning } = splitInlineThoughts.flush();
+                    if (visible) {
+                        fullContent += visible;
+                        if (onDelta) onDelta(visible);
+                    }
+                    if (reasoning) {
+                        fullReasoning = Utils.appendBounded(
+                            fullReasoning,
+                            reasoning,
+                            LlamaServer.MAX_REASONING_CONTENT_CHARS,
+                            LlamaServer.REASONING_CONTENT_TRUNCATION_NOTICE
+                        );
+                        if (onReasoningDelta) onReasoningDelta(reasoning);
+                    }
+                };
                 let finishReason: string | undefined = undefined;
                 const toolCalls: any[] = [];
                 const message: any = { role: 'assistant', content: null as string | null };
@@ -1135,6 +1179,7 @@ private createGetSummaryRequestPayload(messages: ChatMessage[], model: string) {
                         if (!trimmed.startsWith('data:')) continue;
                         const payload = trimmed.slice(5).trim();
                         if (payload === '[DONE]') {
+                            flushInlineThoughts();
                             finalize();
                             readable.removeAllListeners();
                             return;
@@ -1160,7 +1205,12 @@ private createGetSummaryRequestPayload(messages: ChatMessage[], model: string) {
                             // dedicated `reasoning_content` field (e.g. llama.cpp's
                             // reasoning_format handling for DeepSeek-R1 style models).
                             if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) {
-                                fullReasoning += delta.reasoning_content;
+                                fullReasoning = Utils.appendBounded(
+                                    fullReasoning,
+                                    delta.reasoning_content,
+                                    LlamaServer.MAX_REASONING_CONTENT_CHARS,
+                                    LlamaServer.REASONING_CONTENT_TRUNCATION_NOTICE
+                                );
                                 if (onReasoningDelta) onReasoningDelta(delta.reasoning_content);
                             }
 
@@ -1171,13 +1221,18 @@ private createGetSummaryRequestPayload(messages: ChatMessage[], model: string) {
                                     // Split those out live so only the final answer lands in
                                     // the visible transcript, but only when the feature is
                                     // explicitly enabled for known formats.
-                                    const { visible, reasoning } = splitInlineThoughts(delta.content);
+                                    const { visible, reasoning } = splitInlineThoughts.push(delta.content);
                                     if (visible) {
                                         fullContent += visible;
                                         if (onDelta) onDelta(visible);
                                     }
                                     if (reasoning) {
-                                        fullReasoning += reasoning;
+                                        fullReasoning = Utils.appendBounded(
+                                            fullReasoning,
+                                            reasoning,
+                                            LlamaServer.MAX_REASONING_CONTENT_CHARS,
+                                            LlamaServer.REASONING_CONTENT_TRUNCATION_NOTICE
+                                        );
                                         if (onReasoningDelta) onReasoningDelta(reasoning);
                                     }
                                 } else {
@@ -1208,6 +1263,7 @@ private createGetSummaryRequestPayload(messages: ChatMessage[], model: string) {
 
                 readable.on('end', () => {
                     if (!finishReason) finishReason = 'stop';
+                    flushInlineThoughts();
                     finalize();
                 });
 

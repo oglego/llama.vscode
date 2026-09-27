@@ -23,6 +23,32 @@ export class Utils {
     static MSG_NO_USER_PERMISSION = "The user doesn't give a permission to execute the request!";
     static EMPTY_CHAT = {name: "", id: ""}
 
+    /**
+     * Append `delta` to `current`, keeping the result under `maxChars`.
+     * Once the cap is exceeded, the oldest text is dropped and replaced
+     * with `truncationNotice`, keeping the most recent (tail) content.
+     *
+     * Used to bound reasoning/thinking text so it can't grow without
+     * limit in memory, in the UI, or in anything persisted alongside it
+     * (e.g. chat history, request payloads).
+     */
+    static appendBounded = (
+        current: string,
+        delta: string,
+        maxChars: number,
+        truncationNotice: string
+    ): string => {
+        if (!delta) {
+            return current;
+        }
+        let result = current + delta;
+        if (result.length > maxChars) {
+            const tailBudget = Math.max(0, maxChars - truncationNotice.length);
+            result = truncationNotice + result.slice(-tailBudget);
+        }
+        return result;
+    }
+
     static getLeadingSpaces = (input: string): string => {
         // Match the leading spaces using a regular expression
         const match = input.match(/^[ \t]*/);
